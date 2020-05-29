@@ -30,6 +30,7 @@ import tensorflow as tf
 from ml_metadata.proto import metadata_store_pb2
 from ml_metadata.proto import metadata_store_service_pb2
 from ml_metadata.proto import metadata_store_service_pb2_grpc
+from tfx.examples.custom_components.container_components import download_grep_print_pipeline as test_pipeline1
 from tfx.orchestration import metadata
 from tfx.orchestration.kubeflow import test_utils
 from tfx.types import standard_artifacts
@@ -213,6 +214,21 @@ class KubeflowEndToEndTest(test_utils.BaseKubeflowTest):
     cached_execution = self._get_executions_by_pipeline_name_and_state(
         pipeline_name=pipeline_name, state=metadata.EXECUTION_STATE_CACHED)
     self.assertEqual(2, len(cached_execution))
+
+  def testCreateContainerComponentEnd2EndPipeline(self):
+    """End-to-End test for container components."""
+    pipeline_name = 'kubeflow-container-e2e-test-{}'.format(self._random_id())
+    text_url = (
+        'https://storage.googleapis.com/ml-pipeline-playground/hamlet.txt')
+    pattern = 'art thou'
+    component_instances = test_pipeline1.create_pipeline_component_instances(
+        text_url=text_url,
+        pattern=pattern,
+    )
+    # Test that the pipeline can be executed successfully.
+    pipeline = self._create_pipeline(pipeline_name, component_instances)
+    self._compile_and_run_pipeline(
+        pipeline=pipeline, workflow_name=pipeline_name)
 
 
 if __name__ == '__main__':
