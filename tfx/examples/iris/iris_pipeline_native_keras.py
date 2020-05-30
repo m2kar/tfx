@@ -35,6 +35,8 @@ from tfx.components import Trainer
 from tfx.components import Transform
 from tfx.components.base import executor_spec
 from tfx.components.trainer.executor import GenericExecutor
+# TODO(b/156633036): move Tuner to components/ __init__ file.
+from tfx.components.tuner.component import Tuner
 from tfx.dsl.experimental import latest_blessed_model_resolver
 from tfx.orchestration import metadata
 from tfx.orchestration import pipeline
@@ -97,13 +99,23 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
       schema=schema_gen.outputs['schema'],
       module_file=module_file)
 
-  # Uses user-provided Python function that trains a model using TF-Learn.
+  # Tunes the hyperparameters for model training based on user-provided Python
+  # function.
+  tuner = Tuner(
+      module_file=module_file,
+      examples=transform.outputs['transformed_examples'],
+      transform_graph=transform.outputs['transform_graph'],
+      train_args=trainer_pb2.TrainArgs(num_steps=200),
+      eval_args=trainer_pb2.EvalArgs(num_steps=5))
+
+  # Uses user-provided Python function that trains a model.
   trainer = Trainer(
       module_file=module_file,
       custom_executor_spec=executor_spec.ExecutorClassSpec(GenericExecutor),
       examples=transform.outputs['transformed_examples'],
       transform_graph=transform.outputs['transform_graph'],
       schema=schema_gen.outputs['schema'],
+      hyperparameters=tuner.outputs['best_hyperparameters'],
       train_args=trainer_pb2.TrainArgs(num_steps=2000),
       eval_args=trainer_pb2.EvalArgs(num_steps=5))
 
@@ -156,6 +168,7 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
           schema_gen,
           example_validator,
           transform,
+          tuner,
           trainer,
           model_resolver,
           evaluator,
