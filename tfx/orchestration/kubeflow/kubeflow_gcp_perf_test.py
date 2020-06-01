@@ -27,6 +27,7 @@ from typing import Text
 
 from absl import logging
 import kfp
+from kfp_server_api import rest
 import tensorflow as tf
 
 from tfx.examples.chicago_taxi_pipeline import taxi_pipeline_kubeflow_gcp
@@ -50,6 +51,13 @@ _KFP_NAMESPACE = 'kubeflow'
 # b/150222976. This might need to be adjusted occasionally.
 _TIME_OUT_SECONDS = 6 * 3600
 
+# KFP client polling interval, in seconds
+_POLLING_INTERVAL = 60
+
+# TODO(b/156784019): temporary workaround.
+# Number of retries when `get_run` returns 504 Gateway timeout.
+_N_RETRIES_FOR_504 = 5
+
 # The base container image name to use when building the image used in tests.
 _BASE_CONTAINER_IMAGE = os.environ['KFP_E2E_BASE_CONTAINER_IMAGE']
 
@@ -59,8 +67,14 @@ _GCP_PROJECT_ID = os.environ['KFP_E2E_GCP_PROJECT_ID']
 # The GCP region in which the end-to-end test is run.
 _GCP_REGION = os.environ['KFP_E2E_GCP_REGION']
 
+# The GCP zone in which the cluster is created.
+_GCP_ZONE = os.environ['KFP_E2E_GCP_ZONE']
+
 # The GCP bucket to use to write output artifacts.
 _BUCKET_NAME = os.environ['KFP_E2E_BUCKET_NAME']
+
+# The GCP GKE cluster name where the KFP deployment is installed.
+_CLUSTER_NAME = os.environ['KFP_E2E_CLUSTER_NAME']
 
 # Various execution status of a KFP pipeline.
 _KFP_RUNNING_STATUS = 'running'
@@ -125,6 +139,13 @@ class KubeflowGcpPerfTest(test_utils.BaseKubeflowTest):
   @classmethod
   def tearDownClass(cls):
     super(test_utils.BaseKubeflowTest, cls).tearDownClass()
+    # Delete the cluster created in the test.
+    delete_cluster_command = [
+        'gcloud', 'container', 'clusters', 'delete', _CLUSTER_NAME,
+        '--region=%s' % _GCP_ZONE, '--quiet'
+    ]
+    logging.info(
+        subprocess.check_output(delete_cluster_command).decode('utf-8'))
 
   def _get_workflow_name(self, pipeline_name: Text) -> Text:
     """Gets the Argo workflow name using pipeline name."""
@@ -175,9 +196,29 @@ class KubeflowGcpPerfTest(test_utils.BaseKubeflowTest):
     """
     status = None
     start_time = datetime.datetime.now()
+    retry_count = 0
     while True:
       client = kfp.Client(host=host)
-      get_run_response = client._run_api.get_run(run_id=run_id)
+      # TODO(b/156784019): workaround the known issue at b/156784019 and
+      # https://github.com/kubeflow/pipelines/issues/3669
+      # by wait-and-retry when 504 is hit.
+      try:
+        get_run_response = client._run_api.get_run(run_id=run_id)
+      except rest.ApiException as api_err:
+        # If get_run failed with 504, wait _POLLING_INTERVAL and retry.
+        if api_err.status == 504:
+          if retry_count < _N_RETRIES_FOR_504:
+            retry_count += 1
+            time.sleep(_POLLING_INTERVAL)
+            continue
+
+          raise RuntimeError('Still hit 504 error after %s retries: %s' %
+                             (_N_RETRIES_FOR_504, api_err))
+        # If non-504 err is returned, immediately raise.
+        raise
+      else:
+        # If get_run succeeded, reset retry_count.
+        retry_count = 0
 
       if (get_run_response and get_run_response.run and
           get_run_response.run.status and
@@ -189,9 +230,9 @@ class KubeflowGcpPerfTest(test_utils.BaseKubeflowTest):
         # Timeout.
         raise RuntimeError('Waiting for run timeout at %s' %
                            datetime.datetime.now().strftime('%H:%M:%S'))
-      else:
-        logging.info('Waiting for the job to complete...')
-        time.sleep(10)
+
+      logging.info('Waiting for the job to complete...')
+      time.sleep(_POLLING_INTERVAL)
 
     workflow_log = self._get_workflow_log(pipeline_name)
 
@@ -260,7 +301,8 @@ class KubeflowGcpPerfTest(test_utils.BaseKubeflowTest):
         beam_pipeline_args=_BEAM_PIPELINE_ARGS)
     self._compile_and_run_pipeline(
         pipeline=pipeline,
-        query_sample_rate=1,
+        # DO NOT SUBMIT: testing
+        query_sample_rate=0.001,
         # (1M * batch_size=200) / 200M records ~ 1 epoch
         train_steps=1000000,
         eval_steps=10000,
