@@ -33,6 +33,8 @@ toc:
   path: /tfx/guide/infra_validator
 - title: "Pusher"
   path: /tfx/guide/pusher
+- title: "BulkInferrer"
+  path: /tfx/guide/bulkinferrer
 - title: "Advanced: Custom Components"
   path: /tfx/guide/custom_component
 
